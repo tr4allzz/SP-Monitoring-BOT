@@ -13,6 +13,7 @@ class Database {
         }
 
         this.dbPath = path.join(dataDir, 'bot.db');
+        this.migrationsPath = path.join(__dirname, '..', 'database', 'migrations'); // ADD THIS LINE
         this.db = null;
     }
 
@@ -193,6 +194,58 @@ class Database {
             });
         });
     }
+    // W klasie Database, dodaj tę metodę po connect()
+    async migrate() {
+        try {
+            console.log('🔄 Checking database schema...');
+
+            // Check if whale columns exist
+            const tableInfo = await this.getTableInfo('transactions');
+            const hasIsWhale = tableInfo.some(col => col.name === 'is_whale');
+            const hasTokenAgeHours = tableInfo.some(col => col.name === 'token_age_hours');
+
+            if (!hasIsWhale) {
+                console.log('🔄 Adding is_whale column...');
+                await this.addColumn('transactions', 'is_whale', 'BOOLEAN DEFAULT 0');
+                console.log('✅ Added is_whale column');
+            }
+
+            if (!hasTokenAgeHours) {
+                console.log('🔄 Adding token_age_hours column...');
+                await this.addColumn('transactions', 'token_age_hours', 'REAL');
+                console.log('✅ Added token_age_hours column');
+            }
+
+            console.log('✅ Database schema migration completed');
+        } catch (error) {
+            console.error('❌ Migration error:', error.message);
+        }
+    }
+
+    async getTableInfo(tableName) {
+        return new Promise((resolve, reject) => {
+            this.db.all(`PRAGMA table_info(${tableName})`, (err, rows) => {
+                if (err) {
+                    reject(err);
+                } else {
+                    resolve(rows);
+                }
+            });
+        });
+    }
+
+    async addColumn(tableName, columnName, columnDefinition) {
+        return new Promise((resolve, reject) => {
+            const query = `ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`;
+            this.db.run(query, (err) => {
+                if (err && !err.message.includes('duplicate column name')) {
+                    reject(err);
+                } else {
+                    resolve();
+                }
+            });
+        });
+    }
     // IP Assets
     async saveIPAsset(asset) {
         const query = `INSERT OR REPLACE INTO ip_assets 
@@ -278,6 +331,128 @@ class Database {
             });
         });
     }
+    async runMigrations() {
+        try {
+            // Get current schema version
+            const currentVersion = await this.getSchemaVersion();
+            console.log(`📊 Current database version: ${currentVersion}`);
+
+            // Get available migrations
+            const migrations = await this.getAvailableMigrations();
+
+            // Run pending migrations
+            for (const migration of migrations) {
+                if (migration.version > currentVersion) {
+                    console.log(`🔄 Running migration: ${migration.filename}`);
+                    await this.runMigration(migration);
+                    await this.setSchemaVersion(migration.version);
+                    console.log(`✅ Migration ${migration.filename} completed`);
+                }
+            }
+
+            console.log('✅ All migrations completed');
+        } catch (error) {
+            console.error('❌ Migration error:', error);
+            throw error;
+        }
+    }
+
+    async getSchemaVersion() {
+        return new Promise((resolve) => {
+            this.db.get('PRAGMA user_version', (err, row) => {
+                if (err) {
+                    console.log('Using default schema version 0');
+                    resolve(0);
+                } else {
+                    resolve(row.user_version);
+                }
+            });
+        });
+    }
+
+    async setSchemaVersion(version) {
+        return new Promise((resolve, reject) => {
+            this.db.run(`PRAGMA user_version = ${version}`, (err) => {
+                if (err) {
+                    reject(err);
+                } else {
+                    resolve();
+                }
+            });
+        });
+    }
+
+    async getAvailableMigrations() {
+        const fs = require('fs');
+
+        if (!fs.existsSync(this.migrationsPath)) {
+            console.log('⚠️  No migrations directory found');
+            return [];
+        }
+
+        const files = fs.readdirSync(this.migrationsPath)
+            .filter(file => file.endsWith('.sql'))
+            .sort();
+
+        return files.map(filename => {
+            const versionMatch = filename.match(/^(\d+)_/);
+            const version = versionMatch ? parseInt(versionMatch[1]) : 0;
+
+            return {
+                filename,
+                version,
+                path: path.join(this.migrationsPath, filename)
+            };
+        });
+    }
+
+    async runMigration(migration) {
+        const fs = require('fs');
+        const sql = fs.readFileSync(migration.path, 'utf8');
+
+        return new Promise((resolve, reject) => {
+            this.db.exec(sql, (err) => {
+                if (err) {
+                    console.error(`❌ Error running migration ${migration.filename}:`, err);
+                    reject(err);
+                } else {
+                    resolve();
+                }
+            });
+        });
+    }
+
+    // Add method to manually exclude tokens
+    async excludeToken(address, name, reason, marketCap = null) {
+        const query = `INSERT OR REPLACE INTO token_exclusions 
+            (address, token_name, reason, market_cap, excluded_at) 
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`;
+
+        return new Promise((resolve, reject) => {
+            this.db.run(query, [address, name, reason, marketCap], function(err) {
+                if (err) {
+                    reject(err);
+                } else {
+                    console.log(`🚫 Token ${name} excluded: ${reason}`);
+                    resolve(this.changes);
+                }
+            });
+        });
+    }
+
+    async getExcludedTokens() {
+        const query = `SELECT * FROM token_exclusions WHERE is_active = 1`;
+
+        return new Promise((resolve, reject) => {
+            this.db.all(query, [], (err, rows) => {
+                if (err) {
+                    reject(err);
+                } else {
+                    resolve(rows);
+                }
+            });
+        });
+    }
 
     async logWhaleAlert(userId, transactionHash, amount, tokenAddress) {
         const query = `INSERT INTO whale_alerts (user_id, transaction_hash, amount, token_address) VALUES (?, ?, ?, ?)`;
@@ -320,6 +495,7 @@ async function getDatabase() {
     if (!database) {
         database = new Database();
         await database.connect();
+        await database.migrate(); // ✅ DODAJ TĘ LINIĘ
         await database.initTables();
     }
     return database;

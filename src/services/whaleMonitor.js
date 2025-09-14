@@ -442,7 +442,142 @@ ${transaction.isRecentToken ? '🚨 **ALPHA ALERT - Nowo utworzony token!**' : '
             mode: this.provider ? 'Real Blockchain Monitoring' : 'Disabled'
         };
     }
+// Add these methods to your WhaleMonitor class
 
+    async getDetailedTokenAnalysis(tokenAddress) {
+        try {
+            // Get token transactions
+            const transactions = await this.getTokenTransactions(tokenAddress);
+
+            if (!transactions || transactions.length === 0) {
+                return {
+                    error: "No transaction data available",
+                    tokenAddress: tokenAddress
+                };
+            }
+
+            // Perform analysis
+            const analysis = {
+                tokenAddress: tokenAddress,
+                totalTransactions: transactions.length,
+                firstTenMinutes: this.analyzeFirstTenMinutes(transactions),
+                launchPhase: this.determineLaunchPhase(transactions),
+                whaleEntryPattern: this.analyzeWhaleEntry(transactions)
+            };
+
+            return analysis;
+        } catch (error) {
+            console.error('Error analyzing token:', error);
+            return { error: "Analysis failed", tokenAddress };
+        }
+    }
+
+    async getTokenTransactions(tokenAddress) {
+        const query = `SELECT * FROM transactions WHERE token_address = ? ORDER BY timestamp ASC`;
+
+        return new Promise((resolve, reject) => {
+            this.db.db.all(query, [tokenAddress], (err, rows) => {
+                if (err) {
+                    reject(err);
+                } else {
+                    resolve(rows);
+                }
+            });
+        });
+    }
+
+    analyzeFirstTenMinutes(transactions) {
+        if (!transactions || transactions.length === 0) return null;
+
+        const launchTime = new Date(transactions[0].timestamp).getTime();
+        const tenMinutesMs = 10 * 60 * 1000;
+
+        const firstTenMinTxs = transactions.filter(tx =>
+            new Date(tx.timestamp).getTime() - launchTime <= tenMinutesMs
+        );
+
+        const uniqueWallets = new Set();
+        let totalVolume = 0;
+
+        firstTenMinTxs.forEach(tx => {
+            uniqueWallets.add(tx.from_address);
+            totalVolume += tx.amount || 0;
+        });
+
+        return {
+            txCount: firstTenMinTxs.length,
+            uniqueWallets: uniqueWallets,
+            totalVolume: totalVolume,
+            avgTxSize: firstTenMinTxs.length > 0 ? totalVolume / firstTenMinTxs.length : 0
+        };
+    }
+
+    determineLaunchPhase(transactions) {
+        if (!transactions || transactions.length === 0) return 'unknown';
+
+        const firstHour = transactions.slice(0, Math.min(20, transactions.length));
+        const uniqueWallets = new Set(firstHour.map(tx => tx.from_address));
+
+        if (uniqueWallets.size === 1) return 'single_buyer';
+        if (uniqueWallets.size < 5) return 'coordinated';
+        if (uniqueWallets.size >= 10) return 'organic';
+        return 'normal';
+    }
+
+    analyzeWhaleEntry(transactions) {
+        if (!transactions || transactions.length === 0) return 'none';
+
+        const largeTxs = transactions.filter(tx => (tx.amount || 0) > 100);
+
+        if (largeTxs.length === 0) return 'none';
+        if (largeTxs.length >= 3) return 'heavy';
+        return 'moderate';
+    }
+
+    async getTokenCalendar(tokenAddress) {
+        // Check if token_calendars table exists first
+        try {
+            const query = `SELECT * FROM token_calendars WHERE address = ?`;
+
+            return new Promise((resolve) => {
+                this.db.db.get(query, [tokenAddress], (err, row) => {
+                    if (err) {
+                        // If table doesn't exist, return default structure
+                        resolve({
+                            address: tokenAddress,
+                            launch_time: new Date().toISOString(),
+                            milestones: {},
+                            analysis: {}
+                        });
+                    } else if (!row) {
+                        // Token not found, return default
+                        resolve({
+                            address: tokenAddress,
+                            launch_time: new Date().toISOString(),
+                            milestones: {},
+                            analysis: {}
+                        });
+                    } else {
+                        // Parse existing data
+                        resolve({
+                            address: row.address,
+                            launch_time: row.launch_time,
+                            milestones: JSON.parse(row.milestones || '{}'),
+                            analysis: JSON.parse(row.analysis_data || '{}')
+                        });
+                    }
+                });
+            });
+        } catch (error) {
+            console.error('Error getting token calendar:', error);
+            return {
+                address: tokenAddress,
+                launch_time: new Date().toISOString(),
+                milestones: {},
+                analysis: {}
+            };
+        }
+    }
     stopMonitoring() {
         this.isMonitoring = false;
         console.log('🛑 Whale monitoring stopped');

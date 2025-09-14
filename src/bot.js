@@ -16,7 +16,59 @@ let bot;
 let db;
 let storyMonitor;
 let whaleMonitor;
+// Add these functions before initializeBot()
+function formatTokenAnalysis(analysis) {
+    if (!analysis) {
+        return "❌ No analysis data available for this token";
+    }
 
+    let message = `📊 **Token Analysis**\n\n`;
+
+    if (analysis.firstTenMinutes) {
+        const tenMin = analysis.firstTenMinutes;
+        message += `**First 10 Minutes:**\n`;
+        message += `• Transactions: ${tenMin.txCount || 0}\n`;
+        message += `• Unique Wallets: ${tenMin.uniqueWallets?.size || 0}\n`;
+        message += `• Total Volume: $${(tenMin.totalVolume || 0).toLocaleString()}\n`;
+        message += `• Avg TX Size: $${Math.round(tenMin.avgTxSize || 0)}\n\n`;
+    }
+
+    if (analysis.launchPhase) {
+        message += `**Launch Phase:** ${analysis.launchPhase}\n`;
+    }
+
+    if (analysis.whaleEntryPattern) {
+        message += `**Whale Pattern:** ${analysis.whaleEntryPattern}\n`;
+    }
+
+    return message;
+}
+
+function formatTokenCalendar(calendar) {
+    if (!calendar) {
+        return "❌ No calendar data available for this token";
+    }
+
+    let message = `📅 **Token Calendar**\n\n`;
+    message += `**Launch Time:** ${new Date(calendar.launch_time).toLocaleString()}\n\n`;
+
+    if (calendar.milestones && Object.keys(calendar.milestones).length > 0) {
+        message += `**Market Cap Milestones:**\n`;
+
+        Object.entries(calendar.milestones)
+            .sort(([a], [b]) => parseInt(a) - parseInt(b))
+            .forEach(([milestone, data]) => {
+                message += `• $${parseInt(milestone).toLocaleString()}: ${new Date(data.reached_at).toLocaleString()}\n`;
+                if (data.time_from_launch) {
+                    message += `  └ Time: ${data.time_from_launch}\n`;
+                }
+            });
+    } else {
+        message += "No milestones reached yet\n";
+    }
+
+    return message;
+}
 async function initializeBot() {
     try {
         // Initialize database
@@ -269,7 +321,82 @@ Ustawienia wyglądają dobrze! 🚀
                 bot.sendMessage(chatId, '❌ Błąd pobierania statusu. Spróbuj ponownie.');
             }
         });
+// Enhanced /analyze command for detailed token analysis
+        bot.onText(/\/analyze\s+(.+)/, async (msg, match) => {
+            const chatId = msg.chat.id;
+            const tokenAddress = match[1].trim();
 
+            try {
+                const analysis = await whaleMonitor.getDetailedTokenAnalysis(tokenAddress);
+                const formattedAnalysis = formatTokenAnalysis(analysis);
+
+                bot.sendMessage(chatId, formattedAnalysis, {
+                    parse_mode: 'Markdown'
+                });
+            } catch (error) {
+                bot.sendMessage(chatId, '❌ Error analyzing token');
+            }
+        });
+        bot.onText(/\/exclude\s+(.+)\s+(.+)/, async (msg, match) => {
+            const chatId = msg.chat.id;
+            const tokenAddress = match[1].trim();
+            const reason = match[2].trim();
+
+            try {
+                await db.excludeToken(tokenAddress, 'Manual Exclusion', reason);
+                bot.sendMessage(chatId, `🚫 Token ${tokenAddress} excluded: ${reason}`);
+            } catch (error) {
+                bot.sendMessage(chatId, '❌ Error excluding token');
+            }
+        });
+
+// Command to list excluded tokens
+        bot.onText(/\/excluded/, async (msg) => {
+            const chatId = msg.chat.id;
+
+            try {
+                const excluded = await db.getExcludedTokens();
+
+                let message = `🚫 **Excluded Tokens (${excluded.length})**\n\n`;
+
+                excluded.slice(0, 10).forEach((token, index) => {
+                    message += `**${index + 1}.** ${token.token_name || 'Unknown'}\n`;
+                    message += `Address: \`${token.address}\`\n`;
+                    message += `Reason: ${token.reason}\n`;
+                    message += `Excluded: ${new Date(token.excluded_at).toLocaleDateString()}\n\n`;
+                });
+
+                if (excluded.length > 10) {
+                    message += `...and ${excluded.length - 10} more tokens`;
+                }
+
+                bot.sendMessage(chatId, message, {parse_mode: 'Markdown'});
+            } catch (error) {
+                bot.sendMessage(chatId, '❌ Error getting excluded tokens');
+            }
+        });
+
+// Command to check database version
+        bot.onText(/\/dbversion/, async (msg) => {
+            const chatId = msg.chat.id;
+
+            try {
+                const version = await db.getSchemaVersion();
+                bot.sendMessage(chatId, `📊 Database schema version: ${version}`);
+            } catch (error) {
+                bot.sendMessage(chatId, '❌ Error checking database version');
+            }
+        });
+// /calendar command for mcap progression
+        bot.onText(/\/calendar\s+(.+)/, async (msg, match) => {
+            const chatId = msg.chat.id;
+            const tokenAddress = match[1].trim();
+
+            const calendar = await whaleMonitor.getTokenCalendar(tokenAddress);
+            const formatted = formatTokenCalendar(calendar);
+
+            bot.sendMessage(chatId, formatted, {parse_mode: 'Markdown'});
+        });
         // Handle /users command
         bot.onText(/\/users/, async (msg) => {
             const chatId = msg.chat.id;
