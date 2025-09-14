@@ -4,7 +4,7 @@ const { getDatabase } = require('./config/database');
 const { StoryProtocolMonitor } = require('./services/storyMonitor');
 const { WhaleMonitor } = require('./services/whaleMonitor');
 
-console.log('🚀 Starting Story Monitor Bot...');
+console.log('🚀 Starting Story Monitor Bot - REAL DATA ONLY...');
 
 // Check if bot token exists
 if (!process.env.BOT_TOKEN) {
@@ -16,6 +16,7 @@ let bot;
 let db;
 let storyMonitor;
 let whaleMonitor;
+
 // Add these functions before initializeBot()
 function formatTokenAnalysis(analysis) {
     if (!analysis) {
@@ -69,6 +70,22 @@ function formatTokenCalendar(calendar) {
 
     return message;
 }
+
+// Enhanced error handling for database calls
+async function safeDbCall(dbMethod, ...args) {
+    try {
+        if (typeof dbMethod === 'function') {
+            return await dbMethod.apply(db, args);
+        } else {
+            console.error('❌ Database method not found');
+            return null;
+        }
+    } catch (error) {
+        console.error('❌ Database call failed:', error.message);
+        return null;
+    }
+}
+
 async function initializeBot() {
     try {
         // Initialize database
@@ -128,10 +145,17 @@ Witaj ${userName}! Jesteś teraz zarejestrowany dla alertów.
 /whale [kwota] - Ustaw próg alertu whale (domyślnie 40 IP)
 /whales - Pokaż ostatnie transakcje whales
 /whalesettings - Zarządzaj ustawieniami whales
+/analyze [adres] - Szczegółowa analiza tokenu
+/calendar [adres] - Kalendarz progów market cap
+/exclude [adres] [powód] - Wyklucz token z alertów
+/excluded - Lista wykluczonych tokenów
 /test - Test połączenia z bazą danych
+/help - Pełna lista komend
 
 🚀 Monitorowanie Story Protocol jest AKTYWNE!
 Otrzymasz alerty w czasie rzeczywistym dla nowych IP assets i whale transakcji! 💰
+
+⚡ **Real-time Blockchain Monitoring** - Bez danych testowych!
         `;
 
                 bot.sendMessage(chatId, welcomeMsg, {parse_mode: 'Markdown'});
@@ -142,7 +166,7 @@ Otrzymasz alerty w czasie rzeczywistym dla nowych IP assets i whale transakcji! 
             }
         });
 
-        // Handle /whale command - NEW
+        // Handle /whale command
         bot.onText(/\/whale(?:\s+(\d+))?/, async (msg, match) => {
             const chatId = msg.chat.id;
             const userId = msg.from.id;
@@ -175,7 +199,6 @@ Otrzymasz alerty w czasie rzeczywistym dla nowych IP assets i whale transakcji! 
             }
 
             try {
-                // ✅ SPRAWDŹ CZY METODA ISTNIEJE
                 if (typeof db.updateUserWhaleThreshold === 'function') {
                     await db.updateUserWhaleThreshold(userId, threshold);
                 } else {
@@ -197,15 +220,15 @@ Otrzymasz alerty w czasie rzeczywistym dla nowych IP assets i whale transakcji! 
             }
         });
 
-        // Handle /whales command - NEW
+        // Handle /whales command - REAL DATA ONLY
         bot.onText(/\/whales/, async (msg) => {
             const chatId = msg.chat.id;
 
             try {
                 bot.sendMessage(chatId, '🔍 Pobieranie ostatnich transakcji whales...');
 
-                // Get recent whale transactions (mock data for now)
-                const recentWhales = await getRecentWhaleTransactions(24);
+                // Use real database query instead of mock data
+                const recentWhales = await db.getRecentWhaleTransactions(24);
 
                 if (recentWhales.length === 0) {
                     bot.sendMessage(chatId, `
@@ -221,11 +244,14 @@ Monitorowanie jest aktywne - otrzymasz alerty gdy whales będą aktywne! 🚀
                 let message = `🐋 **Transakcje whales (24h): ${recentWhales.length}**\n\n`;
 
                 recentWhales.slice(0, 10).forEach((whale, index) => {
-                    const emoji = whale.type === 'buy' ? '💰' : '💸';
-                    const action = whale.type === 'buy' ? 'KUPIŁ' : 'SPRZEDAŁ';
+                    const emoji = whale.transaction_type === 'buy' ? '💰' :
+                        whale.transaction_type === 'sell' ? '💸' : '🔄';
+                    const action = whale.transaction_type?.toUpperCase() || 'TRANSFER';
+
                     message += `**${index + 1}.** ${emoji} ${action}\n`;
-                    message += `**Kwota:** ${whale.amount.toLocaleString()} IP\n`;
-                    message += `**Token:** ${whale.tokenName}\n`;
+                    message += `**Kwota:** ${whale.amount?.toLocaleString() || 'Unknown'} tokens\n`;
+                    message += `**Token:** ${whale.token_name || 'Unknown Token'}\n`;
+                    message += `**Hash:** \`${whale.hash}\`\n`;
                     message += `**Czas:** ${new Date(whale.timestamp).toLocaleString()}\n\n`;
                 });
 
@@ -241,7 +267,7 @@ Monitorowanie jest aktywne - otrzymasz alerty gdy whales będą aktywne! 🚀
             }
         });
 
-        // Handle /whalesettings command - NEW
+        // Handle /whalesettings command
         bot.onText(/\/whalesettings/, async (msg) => {
             const chatId = msg.chat.id;
             const userId = msg.from.id;
@@ -281,7 +307,7 @@ Monitorowanie jest aktywne - otrzymasz alerty gdy whales będą aktywne! 🚀
             }
         });
 
-        // Handle /status command (updated)
+        // Handle /status command
         bot.onText(/\/status/, async (msg) => {
             const chatId = msg.chat.id;
             const userId = msg.from.id;
@@ -321,12 +347,14 @@ Ustawienia wyglądają dobrze! 🚀
                 bot.sendMessage(chatId, '❌ Błąd pobierania statusu. Spróbuj ponownie.');
             }
         });
-// Enhanced /analyze command for detailed token analysis
+
+        // Enhanced /analyze command for detailed token analysis
         bot.onText(/\/analyze\s+(.+)/, async (msg, match) => {
             const chatId = msg.chat.id;
             const tokenAddress = match[1].trim();
 
             try {
+                bot.sendMessage(chatId, '🔍 Analyzing token...');
                 const analysis = await whaleMonitor.getDetailedTokenAnalysis(tokenAddress);
                 const formattedAnalysis = formatTokenAnalysis(analysis);
 
@@ -334,9 +362,12 @@ Ustawienia wyglądają dobrze! 🚀
                     parse_mode: 'Markdown'
                 });
             } catch (error) {
+                console.error('❌ Error analyzing token:', error);
                 bot.sendMessage(chatId, '❌ Error analyzing token');
             }
         });
+
+        // Command to exclude tokens
         bot.onText(/\/exclude\s+(.+)\s+(.+)/, async (msg, match) => {
             const chatId = msg.chat.id;
             const tokenAddress = match[1].trim();
@@ -346,11 +377,12 @@ Ustawienia wyglądają dobrze! 🚀
                 await db.excludeToken(tokenAddress, 'Manual Exclusion', reason);
                 bot.sendMessage(chatId, `🚫 Token ${tokenAddress} excluded: ${reason}`);
             } catch (error) {
+                console.error('❌ Error excluding token:', error);
                 bot.sendMessage(chatId, '❌ Error excluding token');
             }
         });
 
-// Command to list excluded tokens
+        // Command to list excluded tokens
         bot.onText(/\/excluded/, async (msg) => {
             const chatId = msg.chat.id;
 
@@ -372,11 +404,12 @@ Ustawienia wyglądają dobrze! 🚀
 
                 bot.sendMessage(chatId, message, {parse_mode: 'Markdown'});
             } catch (error) {
+                console.error('❌ Error getting excluded tokens:', error);
                 bot.sendMessage(chatId, '❌ Error getting excluded tokens');
             }
         });
 
-// Command to check database version
+        // Command to check database version
         bot.onText(/\/dbversion/, async (msg) => {
             const chatId = msg.chat.id;
 
@@ -384,19 +417,28 @@ Ustawienia wyglądają dobrze! 🚀
                 const version = await db.getSchemaVersion();
                 bot.sendMessage(chatId, `📊 Database schema version: ${version}`);
             } catch (error) {
+                console.error('❌ Error checking database version:', error);
                 bot.sendMessage(chatId, '❌ Error checking database version');
             }
         });
-// /calendar command for mcap progression
+
+        // /calendar command for mcap progression
         bot.onText(/\/calendar\s+(.+)/, async (msg, match) => {
             const chatId = msg.chat.id;
             const tokenAddress = match[1].trim();
 
-            const calendar = await whaleMonitor.getTokenCalendar(tokenAddress);
-            const formatted = formatTokenCalendar(calendar);
+            try {
+                bot.sendMessage(chatId, '📅 Getting token calendar...');
+                const calendar = await whaleMonitor.getTokenCalendar(tokenAddress);
+                const formatted = formatTokenCalendar(calendar);
 
-            bot.sendMessage(chatId, formatted, {parse_mode: 'Markdown'});
+                bot.sendMessage(chatId, formatted, {parse_mode: 'Markdown'});
+            } catch (error) {
+                console.error('❌ Error getting token calendar:', error);
+                bot.sendMessage(chatId, '❌ Error getting token calendar');
+            }
         });
+
         // Handle /users command
         bot.onText(/\/users/, async (msg) => {
             const chatId = msg.chat.id;
@@ -515,7 +557,7 @@ Zostań w gotowości na alpha! 🚀
   `, {parse_mode: 'Markdown'});
         });
 
-        // Handle /help command - NEW
+        // Handle /help command - UPDATED
         bot.onText(/\/help/, async (msg) => {
             const chatId = msg.chat.id;
 
@@ -538,6 +580,13 @@ Zostań w gotowości na alpha! 🚀
 /whales - Ostatnie transakcje whales
 /whalesettings - Zarządzaj ustawieniami whales
 
+**🔍 Analiza i Zarządzanie:**
+/analyze [adres] - Szczegółowa analiza tokenu
+/calendar [adres] - Kalendarz progów market cap
+/exclude [adres] [powód] - Wyklucz token z alertów
+/excluded - Lista wykluczonych tokenów
+/dbversion - Wersja bazy danych
+
 **🔥 Specjalne Funkcje:**
 - **Fresh Token Priority** - Dodatkowe alerty dla tokenów utworzonych w ostatnich 4h
 - **whale Transakcje** - Konfigurowalne progi (domyślnie 40 IP)
@@ -552,11 +601,12 @@ Zostań w gotowości na alpha! 🚀
 
 **🚀 Przykłady:**
 \`/whale 50\` - Alerty dla transakcji ≥ 50 IP
-\`/newips\` - Pokaż tokeny z ostatnich 24h
-\`/whales\` - Ostatnia aktywność whales
+\`/analyze 0x123...\` - Analiza konkretnego tokenu
+\`/exclude 0x123... spam token\` - Wyklucz spam token
+\`/calendar 0x123...\` - Pokaż progi market cap
 
 Potrzebujesz pomocy? Napisz do @story_monitor_support
-            `;
+        `;
 
             bot.sendMessage(chatId, helpMsg, {parse_mode: 'Markdown'});
         });
@@ -566,36 +616,20 @@ Potrzebujesz pomocy? Napisz do @story_monitor_support
             console.error('❌ Polling error:', error.message);
         });
 
+        bot.on('error', (error) => {
+            console.error('❌ Bot error:', error.message);
+        });
+
         console.log('✅ Bot initialized and running!');
         console.log('✅ Database ready for Story Protocol monitoring');
-        console.log('🐋 Whale monitoring system ready');
+        console.log('🐋 Whale monitoring system ready - REAL BLOCKCHAIN DATA ONLY');
+        console.log('⚡ No mock data - all alerts are from live transactions');
         console.log('Send /start to your bot to test it.');
 
     } catch (error) {
         console.error('❌ Failed to initialize bot:', error);
         process.exit(1);
     }
-}
-
-// Mock function for whale transactions (replace with real database query)
-async function getRecentWhaleTransactions(hours) {
-    // This would be replaced with actual database query
-    const mockWhales = [
-        {
-            amount: 156,
-            type: 'buy',
-            tokenName: 'Creative Asset Token',
-            timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
-        },
-        {
-            amount: 89,
-            type: 'sell',
-            tokenName: 'Music Rights IP',
-            timestamp: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString()
-        }
-    ];
-
-    return Math.random() > 0.5 ? mockWhales : [];
 }
 
 // Handle shutdown
