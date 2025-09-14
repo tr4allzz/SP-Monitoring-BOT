@@ -10,6 +10,7 @@ class WhaleMonitor {
         this.monitoredTokens = new Map(); // token_address -> creation_time
         this.lastCleanup = Date.now();
         this.lastCheckedBlock = null;
+        this.bot = null; // Will be null in server mode
 
         // ERC20 Transfer event signature
         this.transferEventSignature = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
@@ -25,6 +26,7 @@ class WhaleMonitor {
         }
     }
 
+    // Telegram bot mode
     async startWhaleMonitoring(bot) {
         if (this.isMonitoring) {
             console.log('⚠️  Whale monitoring already started');
@@ -34,22 +36,40 @@ class WhaleMonitor {
         this.isMonitoring = true;
         this.bot = bot;
 
-        console.log('🐋 Starting real whale transaction monitoring...');
+        console.log('🐋 Starting whale transaction monitoring (Telegram Mode)...');
 
         if (this.provider) {
-            // Monitor new blocks for whale transactions
             this.monitorNewBlocksForWhales();
         } else {
             console.log('❌ No RPC provider - whale monitoring disabled');
         }
 
-        // Update monitored tokens list
         this.updateMonitoredTokensList();
-
-        console.log('✅ Whale monitoring started');
+        console.log('✅ Whale monitoring started (Telegram Mode)');
     }
 
-    // ✅ REAL BLOCKCHAIN MONITORING FOR WHALES
+    // Server mode (no Telegram)
+    async startWhaleMonitoringServerMode() {
+        if (this.isMonitoring) {
+            console.log('⚠️  Whale monitoring already started');
+            return;
+        }
+
+        this.isMonitoring = true;
+        this.bot = null; // No bot in server mode
+
+        console.log('🐋 Starting whale transaction monitoring (Server Mode)...');
+
+        if (this.provider) {
+            this.monitorNewBlocksForWhales();
+        } else {
+            console.log('❌ No RPC provider - whale monitoring disabled');
+        }
+
+        this.updateMonitoredTokensList();
+        console.log('✅ Whale monitoring started (Server Mode)');
+    }
+
     async monitorNewBlocksForWhales() {
         const checkInterval = 30000; // 30 seconds
 
@@ -60,7 +80,8 @@ class WhaleMonitor {
                 const currentBlock = await this.provider.getBlockNumber();
 
                 if (this.lastCheckedBlock && currentBlock > this.lastCheckedBlock) {
-                    console.log(`🐋 Checking blocks ${this.lastCheckedBlock + 1} to ${currentBlock} for whale transactions`);
+                    const mode = this.bot ? 'Telegram' : 'Server';
+                    console.log(`🐋 [${mode}] Checking blocks ${this.lastCheckedBlock + 1} to ${currentBlock} for whale transactions`);
 
                     // Check each new block for whale transactions
                     for (let blockNum = this.lastCheckedBlock + 1; blockNum <= currentBlock; blockNum++) {
@@ -97,7 +118,8 @@ class WhaleMonitor {
                 return;
             }
 
-            console.log(`🐋 Scanning block ${blockNumber} for whale transactions (${block.transactions.length} txs)`);
+            const mode = this.bot ? 'Telegram' : 'Server';
+            console.log(`🐋 [${mode}] Scanning block ${blockNumber} for whale transactions (${block.transactions.length} txs)`);
 
             for (const tx of block.transactions) {
                 await this.analyzeTransactionForWhales(tx, block);
@@ -176,7 +198,8 @@ class WhaleMonitor {
                     tokenAge: this.calculateTokenAge(log.address)
                 };
 
-                console.log(`🐋 REAL WHALE DETECTED: ${transferAmount} ${tokenInfo.symbol} in tx ${tx.hash}`);
+                const mode = this.bot ? 'Telegram' : 'Server';
+                console.log(`🐋 [${mode}] WHALE DETECTED: ${transferAmount} ${tokenInfo.symbol} in tx ${tx.hash}`);
                 await this.processWhaleTransaction(whaleTransaction);
             }
 
@@ -253,7 +276,15 @@ class WhaleMonitor {
             return false;
         }
 
-        // Check if amount meets whale threshold
+        // In server mode, use default threshold since no users
+        if (!this.bot) {
+            const defaultThreshold = 40;
+            const minThreshold = this.isRecentToken(tokenAddress) ?
+                defaultThreshold * 0.7 : defaultThreshold;
+            return amount >= minThreshold;
+        }
+
+        // Check if amount meets whale threshold (Telegram mode)
         const users = await this.db.getAllUsers();
         let minThreshold = 40; // Default threshold
 
@@ -275,7 +306,7 @@ class WhaleMonitor {
 
     determineTransactionType(from, to) {
         // Simple heuristic - in a real implementation you'd check DEX contracts
-        // For now, assume all transfers are "buy" transactions
+        // For now, assume all transfers are "transfer" transactions
         return 'transfer'; // Could be 'buy', 'sell', or 'transfer'
     }
 
@@ -320,7 +351,8 @@ class WhaleMonitor {
                     this.monitoredTokens.set(token.address.toLowerCase(), creationTime);
                 }
 
-                console.log(`📊 Updated monitored tokens list: ${this.monitoredTokens.size} recent tokens`);
+                const mode = this.bot ? 'Telegram' : 'Server';
+                console.log(`📊 [${mode}] Updated monitored tokens list: ${this.monitoredTokens.size} recent tokens`);
 
             } catch (error) {
                 console.error('❌ Error updating monitored tokens list:', error.message);
@@ -337,7 +369,7 @@ class WhaleMonitor {
             // Save whale transaction to database
             await this.saveWhaleTransaction(transaction);
 
-            // Send alerts to users who meet criteria
+            // Send alerts based on mode
             await this.sendWhaleAlert(transaction);
 
         } catch (error) {
@@ -348,7 +380,8 @@ class WhaleMonitor {
     async saveWhaleTransaction(transaction) {
         try {
             await this.db.saveWhaleTransaction(transaction);
-            console.log(`💾 Saved whale transaction: ${transaction.amount} ${transaction.tokenSymbol}`);
+            const mode = this.bot ? 'Telegram' : 'Server';
+            console.log(`💾 [${mode}] Saved whale transaction: ${transaction.amount} ${transaction.tokenSymbol}`);
         } catch (error) {
             console.error('❌ Error saving whale transaction:', error.message);
         }
@@ -356,6 +389,16 @@ class WhaleMonitor {
 
     async sendWhaleAlert(transaction) {
         try {
+            // In server mode, just log the whale detection
+            if (!this.bot) {
+                console.log(`🐋 [Server] WHALE DETECTED: ${transaction.amount.toLocaleString()} ${transaction.tokenSymbol}`);
+                console.log(`   Token: ${transaction.tokenName} (${transaction.tokenAddress})`);
+                console.log(`   Hash: ${transaction.hash}`);
+                console.log(`   Recent Token: ${transaction.isRecentToken ? 'YES' : 'NO'}`);
+                return;
+            }
+
+            // Telegram mode - send alerts to users
             const users = await this.db.getAllUsers();
 
             if (users.length === 0) {
@@ -376,7 +419,7 @@ class WhaleMonitor {
 
             const alertMessage = this.formatWhaleAlert(transaction);
 
-            console.log(`📢 Sending REAL whale alert to ${alertUsers.length} users`);
+            console.log(`📢 [Telegram] Sending whale alert to ${alertUsers.length} users`);
 
             for (const user of alertUsers) {
                 try {
@@ -423,7 +466,7 @@ ${transaction.isRecentToken ? '🚨 **ALPHA ALERT - Nowo utworzony token!**' : '
         `.trim();
     }
 
-    // User management methods
+    // User management methods (only used in Telegram mode)
     async setUserWhaleThreshold(userId, threshold) {
         this.whaleThresholds.set(userId, threshold);
         console.log(`🐋 User ${userId} whale threshold set to ${threshold} tokens`);
@@ -439,11 +482,11 @@ ${transaction.isRecentToken ? '🚨 **ALPHA ALERT - Nowo utworzony token!**' : '
             monitoredTokens: this.monitoredTokens.size,
             activeThresholds: this.whaleThresholds.size,
             lastCheckedBlock: this.lastCheckedBlock,
-            mode: this.provider ? 'Real Blockchain Monitoring' : 'Disabled'
+            mode: this.provider ? (this.bot ? 'Telegram Mode' : 'Server Mode') : 'Disabled'
         };
     }
-// Add these methods to your WhaleMonitor class
 
+    // Analysis methods
     async getDetailedTokenAnalysis(tokenAddress) {
         try {
             // Get token transactions
@@ -578,9 +621,11 @@ ${transaction.isRecentToken ? '🚨 **ALPHA ALERT - Nowo utworzony token!**' : '
             };
         }
     }
+
     stopMonitoring() {
         this.isMonitoring = false;
-        console.log('🛑 Whale monitoring stopped');
+        const mode = this.bot ? 'Telegram' : 'Server';
+        console.log(`🛑 [${mode}] Whale monitoring stopped`);
     }
 }
 

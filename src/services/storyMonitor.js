@@ -388,7 +388,55 @@ class StoryProtocolMonitor {
             mode: this.provider ? 'Real Blockchain Monitoring' : 'Disabled'
         };
     }
+// Add this method to StoryProtocolMonitor class
+    async startMonitoringServerMode() {
+        if (this.isMonitoring) {
+            console.log('⚠️  Monitoring already started');
+            return;
+        }
 
+        this.isMonitoring = true;
+        this.bot = null; // No bot in server mode
+
+        console.log('🔍 Starting Story Protocol monitoring (Server Mode)...');
+
+        if (this.provider) {
+            console.log('✅ Using real blockchain monitoring');
+            this.monitorNewBlocks();
+        } else {
+            console.log('❌ No RPC connection - monitoring disabled');
+        }
+
+        console.log('✅ Story Protocol monitoring started (Server Mode)');
+    }
+
+// Update processNewIPs method to handle server mode
+    async processNewIPs(newIPs) {
+        for (const ip of newIPs) {
+            try {
+                // Check if we already processed this IP
+                const existingIP = await this.db.getIPAsset(ip.address);
+                if (existingIP) {
+                    continue; // Skip already processed IPs
+                }
+
+                // Save to database
+                await this.db.saveIPAsset(ip);
+                console.log(`💾 Saved new IP: ${ip.name} (${ip.address})`);
+
+                // In server mode, just log instead of sending alerts
+                if (!this.bot) {
+                    console.log(`🆕 NEW IP DETECTED (Server Mode): ${ip.name} - ${ip.address}`);
+                } else {
+                    // Send alerts to subscribed users (original telegram functionality)
+                    await this.sendNewIPAlert(ip);
+                }
+
+            } catch (error) {
+                console.error('❌ Error processing new IP:', error.message);
+            }
+        }
+    }
     stopMonitoring() {
         this.isMonitoring = false;
         console.log('🛑 Story Protocol monitoring stopped');
